@@ -63,6 +63,35 @@ if (session.text) applyText(session.name, session.text);
 
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
+// AI follow-along: settings live in the app's storage (keys in credentials),
+// the last result lives here so it survives remounts like `session`.
+const SYNC_MS = 10000;
+const sync = {
+    loaded: false,
+    enabled: false,
+    provider: 'claude',
+    anthropicApiKey: '',
+    deepseekApiKey: '',
+    deepseekModel: 'deepseek-v4-flash-vision-exp',
+    inFlight: false,
+    status: '',
+    error: false,
+};
+
+async function loadSyncSettings() {
+    const storage = window.cheatingDaddy && window.cheatingDaddy.storage;
+    if (!storage) return;
+    const [prefs, creds] = await Promise.all([storage.getPreferences(), storage.getCredentials()]);
+    sync.enabled = prefs.scriptSyncEnabled === true;
+    sync.provider = prefs.scriptSyncProvider === 'deepseek' ? 'deepseek' : 'claude';
+    sync.deepseekModel = prefs.deepseekVisionModel || sync.deepseekModel;
+    sync.anthropicApiKey = creds.anthropicApiKey || '';
+    sync.deepseekApiKey = creds.deepseekApiKey || '';
+    sync.loaded = true;
+}
+
+const syncKeyField = () => (sync.provider === 'deepseek' ? 'deepseekApiKey' : 'anthropicApiKey');
+
 /** Script text with its `backticked` file names shown as code. */
 const rich = text =>
     String(text)
@@ -368,6 +397,39 @@ export class ScriptView extends LitElement {
                 font-size: var(--font-size-sm);
             }
 
+            .sync-status {
+                padding: 4px var(--space-md) 6px;
+                font-size: var(--font-size-xs);
+                color: var(--text-muted);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .sync-status.error {
+                color: var(--warning);
+            }
+
+            .toggle {
+                display: inline-flex;
+                align-items: center;
+                gap: var(--space-sm);
+                font-size: var(--font-size-sm);
+                color: var(--text-primary);
+                cursor: pointer;
+            }
+
+            .toggle input {
+                accent-color: var(--accent);
+                cursor: pointer;
+            }
+
+            input.control.wide {
+                width: 320px;
+                user-select: text;
+                cursor: text;
+            }
+
             .hint {
                 font-size: var(--font-size-xs);
                 color: var(--text-muted);
@@ -394,6 +456,7 @@ export class ScriptView extends LitElement {
         this._tick = 0;
         this._interval = null;
         this._raf = 0;
+        this._syncTimer = null;
         // Shortcuts only drive the on-screen player, never the loader.
         this._onKeydown = e => this.presenting && this._handleKeydown(e);
         this._onPrevBeat = () => this.presenting && this.stepBeat(-1);
@@ -412,6 +475,11 @@ export class ScriptView extends LitElement {
             if (session.playing) this._startTicker();
             this._startScroller();
         }
+        if (!sync.loaded)
+            loadSyncSettings().then(
+                () => this._refresh(),
+                e => console.error('Could not load follow-along settings:', e)
+            );
     }
 
     disconnectedCallback() {
@@ -424,6 +492,7 @@ export class ScriptView extends LitElement {
         }
         this._stopTicker();
         this._stopScroller();
+        this._stopSync();
         // Leaving the on-screen player always pauses; the position is kept.
         if (this.presenting) session.playing = false;
     }
@@ -470,6 +539,73 @@ export class ScriptView extends LitElement {
         this._refresh();
     }
 
+    // ── AI follow-along ──
+
+    async _saveSyncSetting(key, value) {
+        const storage = window.cheatingDaddy && window.cheatingDaddy.storage;
+        if (key === 'anthropicApiKey' || key === 'deepseekApiKey') {
+            sync[key] = value.trim();
+            if (storage) await storage.setCredentials({ [key]: sync[key] });
+        } else {
+            const field = { scriptSyncEnabled: 'enabled', scriptSyncProvider: 'provider', deepseekVisionModel: 'deepseekModel' }[key];
+            sync[field] = value;
+            if (storage) await storage.updatePreference(key, value);
+        }
+        sync.status = '';
+        this._refresh();
+    }
+
+    _startSync() {
+        this._stopSync();
+        if (!this.presenting || !sync.enabled) return;
+        this._syncTimer = setInterval(() => this.syncNow(), SYNC_MS);
+    }
+
+    _stopSync() {
+        if (this._syncTimer) {
+            clearInterval(this._syncTimer);
+            this._syncTimer = null;
+        }
+    }
+
+    /** Screenshot -> AI -> jump to the beat it picks. One request at a time. */
+    async syncNow() {
+        if (sync.inFlight || !session.flat.length || !window.require) return;
+        const parsed = session.parsed;
+        const timed = parsed.mode === 'timed';
+        const beats = session.flat.map(entry => {
+            const scene = parsed.scenes[entry.sceneN - 1];
+            return {
+                at: formatClock(entry.atSeconds),
+                scene: scene ? (timed ? `Scene ${scene.n} — ${scene.app}` : scene.app) : '',
+                action: entry.action,
+                narration: entry.narration,
+            };
+        });
+        sync.inFlight = true;
+        sync.status = 'Checking your screen…';
+        sync.error = false;
+        this._refresh();
+        try {
+            const { ipcRenderer } = window.require('electron');
+            const result = await ipcRenderer.invoke('script-sync:locate', { beats, currentIndex: this._currentFlatIndex() });
+            if (!result.success) throw new Error(result.error);
+            const { beat, confidence, reason } = result.data;
+            if (confidence === 'low') {
+                sync.status = `Not sure where you are — staying put (${reason})`;
+            } else {
+                if (beat !== this._currentFlatIndex()) this.seekTo(session.flat[beat].atSeconds);
+                sync.status = `On beat ${beat + 1} of ${session.flat.length} · ${reason}`;
+            }
+        } catch (error) {
+            sync.status = error.message;
+            sync.error = true;
+        } finally {
+            sync.inFlight = false;
+            this._refresh();
+        }
+    }
+
     // ── Playback ──
 
     get _total() {
@@ -504,12 +640,14 @@ export class ScriptView extends LitElement {
         if (session.time >= this._total) session.time = 0;
         session.playing = true;
         this._startTicker();
+        this._startSync();
         this._refresh();
     }
 
     pause() {
         session.playing = false;
         this._stopTicker();
+        this._stopSync();
         this._refresh();
     }
 
@@ -574,6 +712,8 @@ export class ScriptView extends LitElement {
             this._scaleFont(1);
         } else if (e.key === '-') {
             this._scaleFont(-1);
+        } else if ((e.key === 's' || e.key === 'S') && sync.enabled) {
+            this.syncNow();
         } else if (e.key === 'h' || e.key === 'H') {
             this._toggleControls();
         }
@@ -750,9 +890,66 @@ export class ScriptView extends LitElement {
                         </div>
                     </section>
 
-                    ${parsed ? this.renderLoaded(parsed) : ''}
+                    ${parsed ? this.renderLoaded(parsed) : ''} ${this.renderSyncSettings()}
                 </div>
             </div>
+        `;
+    }
+
+    renderSyncSettings() {
+        const deepseek = sync.provider === 'deepseek';
+        return html`
+            <section class="surface">
+                <div class="surface-title">Follow along with AI</div>
+                <div class="surface-subtitle">
+                    While the script plays, take a screenshot every 10 seconds and ask the AI which beat you're on, then jump the script there. The
+                    script overlay itself is hidden from the screenshot. Each check sends one screenshot to the provider and is billed to your API key
+                    (about 240 checks for a 40-minute script); nothing is sent while the script is paused.
+                </div>
+                <div class="form-grid">
+                    <label class="toggle">
+                        <input
+                            type="checkbox"
+                            .checked=${sync.enabled}
+                            @change=${e => this._saveSyncSetting('scriptSyncEnabled', e.target.checked)}
+                        />
+                        Follow along with AI while the script plays
+                    </label>
+                    <div class="form-group">
+                        <span class="form-label">Provider</span>
+                        <select class="control" @change=${e => this._saveSyncSetting('scriptSyncProvider', e.target.value)}>
+                            <option value="claude" ?selected=${!deepseek}>Claude (Anthropic)</option>
+                            <option value="deepseek" ?selected=${deepseek}>DeepSeek</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <span class="form-label">${deepseek ? 'DeepSeek' : 'Claude'} API key</span>
+                        <input
+                            class="control wide"
+                            type="password"
+                            placeholder=${deepseek ? 'sk-…' : 'sk-ant-…'}
+                            .value=${sync[syncKeyField()]}
+                            @change=${e => this._saveSyncSetting(syncKeyField(), e.target.value)}
+                        />
+                    </div>
+                    ${deepseek
+                        ? html`
+                              <div class="form-group">
+                                  <span class="form-label">DeepSeek vision model</span>
+                                  <input
+                                      class="control wide"
+                                      type="text"
+                                      .value=${sync.deepseekModel}
+                                      @change=${e => this._saveSyncSetting('deepseekVisionModel', e.target.value.trim())}
+                                  />
+                              </div>
+                              <div class="form-help">
+                                  DeepSeek's vision model is new and experimental; if it is renamed, put the model ID from DeepSeek's API docs here.
+                              </div>
+                          `
+                        : ''}
+                </div>
+            </section>
         `;
     }
 
@@ -787,7 +984,8 @@ export class ScriptView extends LitElement {
                     <button class="btn primary" ?disabled=${!this._total} @click=${() => this.onPresent()}>Show on screen</button>
                     <button class="btn" @click=${() => this._clear()}>Clear</button>
                     <span class="hint"
-                        >In the player: Space play/pause · ←/→ beat · Shift+←/→ 10s · scroll wheel to scrub · +/− text size · H hide controls</span
+                        >In the player: Space play/pause · ←/→ beat · Shift+←/→ 10s · scroll wheel to scrub · +/− text size · H hide controls · S
+                        check screen now</span
                     >
                 </div>
             </section>
@@ -840,6 +1038,16 @@ export class ScriptView extends LitElement {
                               </select>
                               <button class="btn" title="Smaller text (−)" @click=${() => this._scaleFont(-1)}>A−</button>
                               <button class="btn" title="Larger text (+)" @click=${() => this._scaleFont(1)}>A+</button>
+                              ${sync.enabled
+                                  ? html`<button
+                                        class="btn"
+                                        title="Check my screen now (S)"
+                                        ?disabled=${sync.inFlight}
+                                        @click=${() => this.syncNow()}
+                                    >
+                                        ${sync.inFlight ? 'Checking…' : 'Sync'}
+                                    </button>`
+                                  : ''}
                               <button class="btn" title="Hide controls (H)" @click=${() => this._toggleControls()}>Hide</button>
                           </div>
                           <input
@@ -871,6 +1079,7 @@ export class ScriptView extends LitElement {
                     </div>
                     <div class="reading-line"></div>
                 </div>
+                ${sync.enabled && sync.status ? html`<div class="sync-status ${sync.error ? 'error' : ''}">AI · ${sync.status}</div>` : ''}
             </div>
         `;
     }
