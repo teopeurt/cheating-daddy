@@ -94,7 +94,11 @@ function parseAnswer(text, beatCount) {
 // ── Screenshot ──
 
 async function captureScreen() {
-    const { desktopCapturer, screen } = require('electron');
+    const { desktopCapturer, screen, systemPreferences } = require('electron');
+    // Without permission macOS still returns a screenshot, but of the wallpaper only.
+    if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') !== 'granted') {
+        throw new Error('Allow Screen Recording for this app in System Settings → Privacy & Security, then reopen it');
+    }
     const { width, height } = screen.getPrimaryDisplay().size;
     const scale = Math.min(1, SCREENSHOT_WIDTH / width);
     const sources = await desktopCapturer.getSources({
