@@ -6,6 +6,8 @@ const STORAGE_KEY = 'cheatingDaddy.script';
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const FONT_SCALES = [0.8, 1, 1.25, 1.5, 1.75, 2];
 const TICK_MS = 200;
+// Where the line being read sits, as a fraction of the prompter's height.
+const READING_LINE = 0.35;
 const DASH = '—';
 
 // Playback lives at module level so it survives switching between the
@@ -22,6 +24,7 @@ const session = {
     time: 0,
     playing: false,
     lastStamp: 0,
+    controlsHidden: false,
 };
 
 function readSaved() {
@@ -209,15 +212,14 @@ export class ScriptView extends LitElement {
                 padding-top: 2px;
             }
 
-            /* ── Player ── */
+            /* ── Player (heads-up teleprompter) ── */
 
             .player {
+                position: relative;
                 flex: 1;
                 min-height: 0;
                 display: flex;
                 flex-direction: column;
-                gap: var(--space-sm);
-                padding: var(--space-sm) var(--space-md) var(--space-md);
                 background: var(--bg-app);
             }
 
@@ -226,6 +228,7 @@ export class ScriptView extends LitElement {
                 align-items: center;
                 gap: 6px;
                 flex-wrap: wrap;
+                padding: var(--space-sm) var(--space-md) 0;
             }
 
             .transport .btn {
@@ -244,6 +247,17 @@ export class ScriptView extends LitElement {
                 color: var(--text-muted);
             }
 
+            .clock-pill {
+                position: absolute;
+                top: var(--space-sm);
+                right: var(--space-md);
+                z-index: 2;
+                font-family: var(--font-mono);
+                font-size: var(--font-size-xs);
+                color: var(--text-muted);
+                cursor: pointer;
+            }
+
             .spacer {
                 flex: 1;
             }
@@ -255,148 +269,92 @@ export class ScriptView extends LitElement {
             }
 
             .seek {
-                width: 100%;
+                margin: 6px var(--space-md) 0;
+                height: 4px;
                 accent-color: var(--accent);
                 cursor: pointer;
             }
 
-            .scene-jump {
-                display: flex;
-                gap: 6px;
-                overflow-x: auto;
-                padding-bottom: 2px;
-                flex-shrink: 0;
-            }
-
-            .scene-chip {
-                flex-shrink: 0;
-                border: 1px solid var(--border);
-                border-radius: 999px;
-                padding: 2px 10px;
-                font-size: var(--font-size-xs);
-                color: var(--text-secondary);
-                background: none;
-                cursor: pointer;
-                white-space: nowrap;
-            }
-
-            .scene-chip.active {
-                border-color: var(--accent);
-                color: var(--text-primary);
-                background: rgba(59, 130, 246, 0.12);
-            }
-
-            .now {
-                flex-shrink: 0;
-                border: 1px solid var(--border);
-                border-left: 3px solid var(--accent);
-                border-radius: var(--radius-md);
-                background: var(--bg-surface);
-                padding: var(--space-md);
-            }
-
-            .now-scene {
-                font-size: var(--font-size-xs);
-                color: var(--text-muted);
-                text-transform: uppercase;
-                letter-spacing: 0.04em;
-                margin-bottom: 6px;
-            }
-
-            .now-action {
-                font-size: calc(var(--font-size-lg) * 1.25 * var(--script-scale, 1));
-                font-weight: var(--font-weight-medium);
-                line-height: 1.4;
-                color: var(--text-primary);
-            }
-
-            .now-narration {
-                margin-top: var(--space-sm);
-                font-size: calc(var(--font-size-lg) * var(--script-scale, 1));
-                line-height: 1.45;
-                color: #93c5fd;
-                font-style: italic;
-            }
-
-            .now-next {
-                margin-top: var(--space-sm);
-                font-size: calc(var(--font-size-sm) * var(--script-scale, 1));
-                color: var(--text-muted);
-                line-height: 1.4;
-            }
-
-            .now-meta {
-                margin-top: var(--space-sm);
-                display: flex;
-                flex-direction: column;
-                gap: 2px;
-                font-size: var(--font-size-xs);
-                color: var(--text-secondary);
-            }
-
-            .now-meta b {
-                color: var(--text-muted);
-                font-weight: var(--font-weight-medium);
-            }
-
-            .beats {
+            .prompter {
                 position: relative;
                 flex: 1;
                 min-height: 0;
-                overflow-y: auto;
+                overflow: hidden;
+                -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18%, #000 72%, transparent 100%);
+                mask-image: linear-gradient(to bottom, transparent 0, #000 18%, #000 72%, transparent 100%);
+            }
+
+            .reading-line {
+                position: absolute;
+                left: 0;
+                right: 0;
+                top: var(--reading-line);
+                height: 0;
+                border-top: 1px dashed rgba(59, 130, 246, 0.35);
+                pointer-events: none;
+            }
+
+            .reading-line::before {
+                content: '';
+                position: absolute;
+                left: 6px;
+                top: -6px;
+                border: 6px solid transparent;
+                border-left: 8px solid var(--accent);
+            }
+
+            .scroll {
+                position: relative;
+                height: 100%;
+                overflow: hidden;
+            }
+
+            .script-text {
                 list-style: none;
-                display: flex;
-                flex-direction: column;
-                gap: 2px;
+                padding: 40vh var(--space-xl) 70vh;
             }
 
-            .beat {
-                display: flex;
-                gap: var(--space-sm);
-                padding: 6px var(--space-sm);
-                border-radius: var(--radius-sm);
-                cursor: pointer;
-                opacity: 0.45;
-                font-size: calc(var(--font-size-sm) * var(--script-scale, 1));
+            .line {
+                padding: calc(10px * var(--script-scale, 1)) 0;
+                font-size: calc(26px * var(--script-scale, 1));
                 line-height: 1.4;
+                font-weight: var(--font-weight-medium);
                 color: var(--text-secondary);
+                opacity: 0.55;
+                cursor: pointer;
+                transition:
+                    opacity 300ms ease,
+                    color 300ms ease;
             }
 
-            .beat:hover {
-                background: var(--bg-hover);
+            .line.past {
+                opacity: 0.25;
             }
 
-            .beat.revealed {
-                opacity: 0.75;
-            }
-
-            .beat.current {
+            .line.current {
                 opacity: 1;
                 color: var(--text-primary);
-                background: var(--bg-elevated);
-                box-shadow: inset 2px 0 0 var(--accent);
             }
 
-            .beat .at {
-                font-family: var(--font-mono);
+            .line .scene-label {
+                display: block;
+                margin-bottom: 6px;
                 font-size: var(--font-size-xs);
-                color: var(--text-muted);
-                min-width: 40px;
-                padding-top: 2px;
+                font-weight: var(--font-weight-semibold);
+                color: var(--accent);
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
             }
 
-            .beat .narration {
+            .line .narration {
+                margin-top: 4px;
+                font-size: 0.85em;
                 color: #93c5fd;
                 font-style: italic;
-                margin-top: 2px;
             }
 
-            .scene-marker {
-                font-size: var(--font-size-xs);
-                color: var(--text-muted);
-                text-transform: uppercase;
-                letter-spacing: 0.04em;
-                padding: var(--space-sm) var(--space-sm) 2px;
+            .line code {
+                font-size: 0.8em;
             }
 
             .empty {
@@ -435,7 +393,7 @@ export class ScriptView extends LitElement {
         this._draft = '';
         this._tick = 0;
         this._interval = null;
-        this._lastCurrentKey = '';
+        this._raf = 0;
         // Shortcuts only drive the on-screen player, never the loader.
         this._onKeydown = e => this.presenting && this._handleKeydown(e);
         this._onPrevBeat = () => this.presenting && this.stepBeat(-1);
@@ -450,7 +408,10 @@ export class ScriptView extends LitElement {
             ipcRenderer.on('navigate-previous-response', this._onPrevBeat);
             ipcRenderer.on('navigate-next-response', this._onNextBeat);
         }
-        if (this.presenting && session.playing) this._startTicker();
+        if (this.presenting) {
+            if (session.playing) this._startTicker();
+            this._startScroller();
+        }
     }
 
     disconnectedCallback() {
@@ -462,6 +423,7 @@ export class ScriptView extends LitElement {
             ipcRenderer.removeListener('navigate-next-response', this._onNextBeat);
         }
         this._stopTicker();
+        this._stopScroller();
         // Leaving the on-screen player always pauses; the position is kept.
         if (this.presenting) session.playing = false;
     }
@@ -612,6 +574,8 @@ export class ScriptView extends LitElement {
             this._scaleFont(1);
         } else if (e.key === '-') {
             this._scaleFont(-1);
+        } else if (e.key === 'h' || e.key === 'H') {
+            this._toggleControls();
         }
     }
 
@@ -638,15 +602,76 @@ export class ScriptView extends LitElement {
         return idx;
     }
 
-    updated() {
-        if (!this.presenting) return;
-        const list = this.shadowRoot.querySelector('.beats');
-        const current = list && list.querySelector('.beat.current');
-        const key = current ? current.dataset.key : '';
-        if (current && key !== this._lastCurrentKey) {
-            list.scrollTo({ top: current.offsetTop - list.clientHeight / 3, behavior: 'smooth' });
+    // ── Scrolling ──
+
+    /** The clock between ticks, so the scroll moves every frame rather than every tick. */
+    _liveTime() {
+        if (!session.playing) return session.time;
+        return Math.min(this._total, session.time + ((Date.now() - session.lastStamp) / 1000) * session.speed);
+    }
+
+    /** The scroll offset of every beat line, paired with the time it starts. */
+    _anchors() {
+        const lines = this.shadowRoot.querySelectorAll('.line');
+        return Array.from(lines, (el, i) => ({ y: el.offsetTop, t: session.flat[i] ? session.flat[i].atSeconds : 0 }));
+    }
+
+    /** Time -> scroll offset: a beat glides up past the reading line while it runs, reaching it as the next beat starts. */
+    _yAt(time, anchors) {
+        if (!anchors.length) return 0;
+        if (time <= anchors[0].t) return anchors[0].y;
+        for (let i = 0; i < anchors.length - 1; i++) {
+            const a = anchors[i];
+            const b = anchors[i + 1];
+            if (time < b.t) return b.t > a.t ? a.y + ((time - a.t) / (b.t - a.t)) * (b.y - a.y) : a.y;
         }
-        this._lastCurrentKey = key;
+        return anchors[anchors.length - 1].y;
+    }
+
+    /** Scroll offset -> time, the inverse of `_yAt`, so a wheel scroll scrubs the clock. */
+    _timeAt(y, anchors) {
+        if (!anchors.length) return 0;
+        if (y <= anchors[0].y) return anchors[0].t;
+        for (let i = 0; i < anchors.length - 1; i++) {
+            const a = anchors[i];
+            const b = anchors[i + 1];
+            if (y < b.y) return a.t + ((y - a.y) / (b.y - a.y)) * (b.t - a.t);
+        }
+        return anchors[anchors.length - 1].t;
+    }
+
+    _readingLine(scroll) {
+        return scroll.clientHeight * READING_LINE;
+    }
+
+    _startScroller() {
+        this._stopScroller();
+        const frame = () => {
+            const scroll = this.shadowRoot && this.shadowRoot.querySelector('.scroll');
+            if (scroll) {
+                const top = this._yAt(this._liveTime(), this._anchors()) - this._readingLine(scroll);
+                if (Math.abs(scroll.scrollTop - top) > 0.5) scroll.scrollTop = top;
+            }
+            this._raf = requestAnimationFrame(frame);
+        };
+        this._raf = requestAnimationFrame(frame);
+    }
+
+    _stopScroller() {
+        if (this._raf) cancelAnimationFrame(this._raf);
+        this._raf = 0;
+    }
+
+    _handleWheel(e) {
+        e.preventDefault();
+        const anchors = this._anchors();
+        const current = this._yAt(this._liveTime(), anchors);
+        this.seekTo(this._timeAt(current + e.deltaY, anchors));
+    }
+
+    _toggleControls() {
+        session.controlsHidden = !session.controlsHidden;
+        this._refresh();
     }
 
     // ── Render ──
@@ -761,7 +786,9 @@ export class ScriptView extends LitElement {
                 <div class="row">
                     <button class="btn primary" ?disabled=${!this._total} @click=${() => this.onPresent()}>Show on screen</button>
                     <button class="btn" @click=${() => this._clear()}>Clear</button>
-                    <span class="hint">In the player: Space play/pause · ←/→ beat · Shift+←/→ 10s · +/− text size</span>
+                    <span class="hint"
+                        >In the player: Space play/pause · ←/→ beat · Shift+←/→ 10s · scroll wheel to scrub · +/− text size · H hide controls</span
+                    >
                 </div>
             </section>
         `;
@@ -782,98 +809,68 @@ export class ScriptView extends LitElement {
         const total = this._total;
         const sc = this._currentScene();
         const idx = this._currentFlatIndex();
-        const beat = idx >= 0 ? session.flat[idx] : null;
-        const inScene = beat && sc && beat.sceneN === sc.n;
-        const next = session.flat[idx + 1];
         const timed = parsed.mode === 'timed';
-
-        let action;
-        if (inScene) action = beat.action || DASH;
-        else if (sc && sc.beats.length) action = `${timed ? `Scene ${sc.n}` : sc.app} starts — first beat at ${sc.beats[0].at}.`;
-        else action = 'This scene has no beats (scene-level timing only).';
+        const sceneLabel = n => {
+            const scene = parsed.scenes[n - 1];
+            if (!scene) return '';
+            return timed ? `Scene ${scene.n} — ${scene.app || DASH}` : scene.app;
+        };
 
         let lastScene = null;
         return html`
-            <div class="player" style="--script-scale:${session.fontScale}">
-                <div class="transport">
-                    <button class="btn primary" @click=${() => this.togglePlay()}>${session.playing ? 'Pause' : 'Play'}</button>
-                    <button class="btn" title="Previous beat (←)" @click=${() => this.stepBeat(-1)}>◀</button>
-                    <button class="btn" title="Next beat (→)" @click=${() => this.stepBeat(1)}>▶</button>
-                    <button class="btn" title="Back to scene start" @click=${() => this.seekTo(sc ? sc.startSeconds : 0)}>Scene start</button>
-                    <span class="clock">${formatClock(t)} <span class="total">/ ${formatClock(total)}</span></span>
-                    <span class="spacer"></span>
-                    <select class="control mini" title="Speed" @change=${e => this._setSpeed(e.target.value)}>
-                        ${SPEEDS.map(s => html`<option value=${s} ?selected=${s === session.speed}>${s}×</option>`)}
-                    </select>
-                    <button class="btn" title="Smaller text (−)" @click=${() => this._scaleFont(-1)}>A−</button>
-                    <button class="btn" title="Larger text (+)" @click=${() => this._scaleFont(1)}>A+</button>
-                </div>
-
-                <input
-                    class="seek"
-                    type="range"
-                    min="0"
-                    max=${total}
-                    step="1"
-                    .value=${String(Math.floor(t))}
-                    @input=${e => this.seekTo(e.target.value)}
-                    aria-label="Seek within the script"
-                />
-
-                ${parsed.scenes.length > 1
+            <div class="player" style="--script-scale:${session.fontScale};--reading-line:${READING_LINE * 100}%">
+                ${session.controlsHidden
                     ? html`
-                          <div class="scene-jump">
-                              ${parsed.scenes.map(
-                                  s => html`
-                                      <button class="scene-chip ${sc && s.n === sc.n ? 'active' : ''}" @click=${() => this.seekTo(s.startSeconds)}>
-                                          ${formatClock(s.startSeconds)} · ${timed ? `Scene ${s.n} ` : ''}${s.app}
-                                      </button>
-                                  `
-                              )}
-                          </div>
+                          <span class="clock-pill" title="Show controls (H)" @click=${() => this._toggleControls()}>
+                              ${formatClock(t)} / ${formatClock(total)}
+                          </span>
                       `
-                    : ''}
+                    : html`
+                          <div class="transport">
+                              <button class="btn primary" @click=${() => this.togglePlay()}>${session.playing ? 'Pause' : 'Play'}</button>
+                              <button class="btn" title="Previous beat (←)" @click=${() => this.stepBeat(-1)}>◀</button>
+                              <button class="btn" title="Next beat (→)" @click=${() => this.stepBeat(1)}>▶</button>
+                              <button class="btn" title="Back to scene start" @click=${() => this.seekTo(sc ? sc.startSeconds : 0)}>
+                                  Scene start
+                              </button>
+                              <span class="clock">${formatClock(t)} <span class="total">/ ${formatClock(total)}</span></span>
+                              <span class="spacer"></span>
+                              <select class="control mini" title="Scroll speed" @change=${e => this._setSpeed(e.target.value)}>
+                                  ${SPEEDS.map(s => html`<option value=${s} ?selected=${s === session.speed}>${s}×</option>`)}
+                              </select>
+                              <button class="btn" title="Smaller text (−)" @click=${() => this._scaleFont(-1)}>A−</button>
+                              <button class="btn" title="Larger text (+)" @click=${() => this._scaleFont(1)}>A+</button>
+                              <button class="btn" title="Hide controls (H)" @click=${() => this._toggleControls()}>Hide</button>
+                          </div>
+                          <input
+                              class="seek"
+                              type="range"
+                              min="0"
+                              max=${total}
+                              step="1"
+                              .value=${String(Math.floor(t))}
+                              @input=${e => this.seekTo(e.target.value)}
+                              aria-label="Seek within the script"
+                          />
+                      `}
 
-                <div class="now">
-                    <div class="now-scene">
-                        ${sc ? (timed ? `Scene ${sc.n} — ${sc.app || DASH}` : sc.app) : ''}${sc && sc.contribution ? ` · ${sc.contribution}` : ''}
+                <div class="prompter" @wheel=${e => this._handleWheel(e)}>
+                    <div class="scroll">
+                        <ol class="script-text">
+                            ${session.flat.map((entry, i) => {
+                                const label = entry.sceneN !== lastScene && parsed.scenes.length > 1 ? sceneLabel(entry.sceneN) : '';
+                                lastScene = entry.sceneN;
+                                return html`
+                                    <li class="line ${i === idx ? 'current' : i < idx ? 'past' : ''}" @click=${() => this.seekTo(entry.atSeconds)}>
+                                        ${label ? html`<span class="scene-label">${label}</span>` : ''} ${rich(entry.action || DASH)}
+                                        ${entry.narration ? html`<div class="narration">${quoted(entry.narration)}</div>` : ''}
+                                    </li>
+                                `;
+                            })}
+                        </ol>
                     </div>
-                    <div class="now-action">${rich(action)}</div>
-                    ${inScene && beat.narration ? html`<div class="now-narration">${quoted(beat.narration)}</div>` : ''}
-                    ${next ? html`<div class="now-next">Next at ${formatClock(next.atSeconds)}: ${rich(next.action)}</div>` : ''}
-                    ${sc && (sc.checkpoint || sc.evidence)
-                        ? html`
-                              <div class="now-meta">
-                                  ${sc.checkpoint ? html`<span><b>Checkpoint:</b> ${rich(sc.checkpoint)}</span>` : ''}
-                                  ${sc.evidence ? html`<span><b>Evidence:</b> ${rich(sc.evidence)}</span>` : ''}
-                              </div>
-                          `
-                        : ''}
+                    <div class="reading-line"></div>
                 </div>
-
-                <ol class="beats">
-                    ${session.flat.map((entry, i) => {
-                        const marker =
-                            entry.sceneN !== lastScene && parsed.scenes.length > 1
-                                ? html`<li class="scene-marker">${timed ? `Scene ${entry.sceneN}` : parsed.scenes[entry.sceneN - 1].app}</li>`
-                                : '';
-                        lastScene = entry.sceneN;
-                        return html`
-                            ${marker}
-                            <li
-                                class="beat ${t >= entry.atSeconds ? 'revealed' : ''} ${i === idx ? 'current' : ''}"
-                                data-key=${i}
-                                @click=${() => this.seekTo(entry.atSeconds)}
-                            >
-                                <span class="at">${formatClock(entry.atSeconds)}</span>
-                                <div>
-                                    <div>${rich(entry.action || DASH)}</div>
-                                    ${entry.narration ? html`<div class="narration">${quoted(entry.narration)}</div>` : ''}
-                                </div>
-                            </li>
-                        `;
-                    })}
-                </ol>
             </div>
         `;
     }
