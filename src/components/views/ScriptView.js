@@ -7,7 +7,10 @@ const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const FONT_SCALES = [0.8, 1, 1.25, 1.5, 1.75, 2];
 const TICK_MS = 200;
 // Where the line being read sits, as a fraction of the prompter's height.
-const READING_LINE = 0.35;
+// The user drags it; these bound the drag so the line stays on screen.
+const DEFAULT_READING_LINE = 0.35;
+const MIN_READING_LINE = 0.08;
+const MAX_READING_LINE = 0.85;
 const DASH = '—';
 
 // Playback lives at module level so it survives switching between the
@@ -18,6 +21,7 @@ const session = {
     text: '',
     wpm: DEFAULT_WPM,
     fontScale: 1,
+    readingLine: DEFAULT_READING_LINE,
     speed: 1,
     parsed: null,
     flat: [],
@@ -35,6 +39,8 @@ function readSaved() {
             session.text = saved.text;
             if (Number(saved.wpm) > 0) session.wpm = Number(saved.wpm);
             if (FONT_SCALES.includes(Number(saved.fontScale))) session.fontScale = Number(saved.fontScale);
+            if (Number(saved.readingLine) > 0)
+                session.readingLine = Math.max(MIN_READING_LINE, Math.min(MAX_READING_LINE, Number(saved.readingLine)));
         }
     } catch (e) {
         // storage unavailable or corrupt; start empty
@@ -43,7 +49,16 @@ function readSaved() {
 
 function writeSaved() {
     try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ name: session.name, text: session.text, wpm: session.wpm, fontScale: session.fontScale }));
+        localStorage.setItem(
+            STORAGE_KEY,
+            JSON.stringify({
+                name: session.name,
+                text: session.text,
+                wpm: session.wpm,
+                fontScale: session.fontScale,
+                readingLine: session.readingLine,
+            })
+        );
     } catch (e) {
         // ignore quota/storage errors; the script still plays this session
     }
@@ -309,25 +324,56 @@ export class ScriptView extends LitElement {
                 flex: 1;
                 min-height: 0;
                 overflow: hidden;
-                -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18%, #000 72%, transparent 100%);
-                mask-image: linear-gradient(to bottom, transparent 0, #000 18%, #000 72%, transparent 100%);
+                /* The fades follow the reading line so the line being read is never faded. */
+                -webkit-mask-image: linear-gradient(
+                    to bottom,
+                    transparent 0,
+                    #000 calc(var(--reading-line) * 0.6),
+                    #000 max(72%, calc(var(--reading-line) + 15%)),
+                    transparent 100%
+                );
+                mask-image: linear-gradient(
+                    to bottom,
+                    transparent 0,
+                    #000 calc(var(--reading-line) * 0.6),
+                    #000 max(72%, calc(var(--reading-line) + 15%)),
+                    transparent 100%
+                );
             }
 
+            /* A 14px grab strip centred on the line; drag it to move where you read. */
             .reading-line {
                 position: absolute;
                 left: 0;
                 right: 0;
                 top: var(--reading-line);
-                height: 0;
+                height: 14px;
+                transform: translateY(-50%);
+                cursor: ns-resize;
+                touch-action: none;
+            }
+
+            .reading-line::after {
+                content: '';
+                position: absolute;
+                left: 0;
+                right: 0;
+                top: 50%;
                 border-top: 1px dashed rgba(59, 130, 246, 0.35);
-                pointer-events: none;
+                transition: border-color var(--transition);
+            }
+
+            .reading-line:hover::after,
+            .reading-line.dragging::after {
+                border-top: 1px solid var(--accent);
             }
 
             .reading-line::before {
                 content: '';
                 position: absolute;
                 left: 6px;
-                top: -6px;
+                top: 50%;
+                transform: translateY(-50%);
                 border: 6px solid transparent;
                 border-left: 8px solid var(--accent);
             }
@@ -340,7 +386,7 @@ export class ScriptView extends LitElement {
 
             .script-text {
                 list-style: none;
-                padding: 40vh var(--space-xl) 70vh;
+                padding: 95vh var(--space-xl) 95vh;
             }
 
             .line {
@@ -781,7 +827,36 @@ export class ScriptView extends LitElement {
     }
 
     _readingLine(scroll) {
-        return scroll.clientHeight * READING_LINE;
+        return scroll.clientHeight * session.readingLine;
+    }
+
+    // ── Moving the reading line ──
+
+    _startLineDrag(e) {
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        this._lineDragging = true;
+        this._refresh();
+    }
+
+    _dragLine(e) {
+        if (!this._lineDragging) return;
+        const rect = this.shadowRoot.querySelector('.prompter').getBoundingClientRect();
+        session.readingLine = clamp((e.clientY - rect.top) / rect.height, MIN_READING_LINE, MAX_READING_LINE);
+        this._refresh();
+    }
+
+    _endLineDrag() {
+        if (!this._lineDragging) return;
+        this._lineDragging = false;
+        writeSaved();
+        this._refresh();
+    }
+
+    _resetLine() {
+        session.readingLine = DEFAULT_READING_LINE;
+        writeSaved();
+        this._refresh();
     }
 
     _startScroller() {
@@ -985,7 +1060,7 @@ export class ScriptView extends LitElement {
                     <button class="btn" @click=${() => this._clear()}>Clear</button>
                     <span class="hint"
                         >In the player: Space play/pause · ←/→ beat · Shift+←/→ 10s · scroll wheel to scrub · +/− text size · H hide controls · S
-                        check screen now</span
+                        check screen now · drag the blue arrow to move the reading line</span
                     >
                 </div>
             </section>
@@ -1016,7 +1091,7 @@ export class ScriptView extends LitElement {
 
         let lastScene = null;
         return html`
-            <div class="player" style="--script-scale:${session.fontScale};--reading-line:${READING_LINE * 100}%">
+            <div class="player" style="--script-scale:${session.fontScale};--reading-line:${session.readingLine * 100}%">
                 ${session.controlsHidden
                     ? html`
                           <span class="clock-pill" title="Show controls (H)" @click=${() => this._toggleControls()}>
@@ -1077,7 +1152,15 @@ export class ScriptView extends LitElement {
                             })}
                         </ol>
                     </div>
-                    <div class="reading-line"></div>
+                    <div
+                        class="reading-line ${this._lineDragging ? 'dragging' : ''}"
+                        title="Drag to move the reading line · double-click to reset"
+                        @pointerdown=${e => this._startLineDrag(e)}
+                        @pointermove=${e => this._dragLine(e)}
+                        @pointerup=${() => this._endLineDrag()}
+                        @pointercancel=${() => this._endLineDrag()}
+                        @dblclick=${() => this._resetLine()}
+                    ></div>
                 </div>
                 ${sync.enabled && sync.status ? html`<div class="sync-status ${sync.error ? 'error' : ''}">AI · ${sync.status}</div>` : ''}
             </div>
